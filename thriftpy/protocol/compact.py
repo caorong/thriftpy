@@ -71,24 +71,11 @@ def writeVarint(trans, n):
         else:
             out.append((n & 0xff) | 0x80)
             n = n >> 7
-    # trans.write(bytes(''.join(map(chr, out)), encoding="UTF-8"))
-    # print(bytes(''.join(map(chr, out))))
-    # print(type(bytes(''.join(map(chr, out)))))
-    # print('out  -------> ', out)
-    # data = ''.join(map(chr, out))
-    # data = str(bytearray(out))
     data = array.array('B', out).tostring()
-    # print('data -------> ', data)
-    # print('data -------> type ', type(data))
-    # print('data  -=-=-= ->', data.encode('UTF-8'))
-    # if isinstance(data, unicode):
-    #     data = data.encode("utf-8")
     if PY3:
-        # trans.write(data.encode('UTF-8'))
         trans.write(data)
     else:
         trans.write(bytes(data))
-        # trans.write(bytes(''.join(map(chr, out))))
 
 
 def readVarint(trans):
@@ -96,11 +83,7 @@ def readVarint(trans):
     shift = 0
 
     while True:
-        # x = trans.readAll(1)
-        # print('trans type', type(trans))
         x = trans.read(1)
-        # print('readVarint', type(x))
-        # print('readVarint', x)
         byte = ord(x)
         result |= (byte & 0x7f) << shift
         if byte >> 7 == 0:
@@ -217,7 +200,6 @@ class TCompactProtocol(object):
     TYPE_SHIFT_AMOUNT = 5
 
     def __init__(self, trans):
-        # TProtocolBase.__init__(self, trans)
         self.trans = trans
         self.state = CLEAR
         self.__last_fid = 0
@@ -264,7 +246,7 @@ class TCompactProtocol(object):
         self.__last_fid = fid
 
     def writeFieldBegin(self, name, type, fid):
-        # assert self.state == FIELD_WRITE, self.state
+        assert self.state == FIELD_WRITE, self.state
         if type == TType.BOOL:
             self.state = BOOL_WRITE
             self.__bool_fid = fid
@@ -354,24 +336,13 @@ class TCompactProtocol(object):
             self.__writeSize(len(bytearray(s, 'utf-8')))
         else:
             self.__writeSize(len(s))
-        print(type(s))
-        # print(type(bytes(s, encoding="UTF-8")))
-        print(s)
-        print(len(s))
-        # if PY3:
-        #     pass
-        # else:
         if not isinstance(s, bytes):
             s = s.encode('utf-8')
-            # outbuf.write(pack_string(val))
-        # self.trans.write(bytes(s, encoding="UTF-8"))
         self.trans.write(s)
-        # self.trans.write(s.encode("utf-8"))
 
     writeString = writer(__writeString)
 
     def readFieldBegin(self):
-        # print('state',self.state)
         assert self.state == FIELD_READ, self.state
         type = self.__readUByte()
         if type & 0x0f == TType.STOP:
@@ -408,8 +379,6 @@ class TCompactProtocol(object):
         return result
 
     def __readVarint(self):
-        # print(self.trans.getvalue())
-        # print(self.trans.read(1))
         return readVarint(self.trans)
 
     def __readZigZag(self):
@@ -424,7 +393,6 @@ class TCompactProtocol(object):
     def readMessageBegin(self):
         assert self.state == CLEAR
         proto_id = self.__readUByte()
-        # print('proto_id', proto_id)
         if proto_id != self.PROTOCOL_ID:
             raise TProtocolException(TProtocolException.BAD_VERSION,
                                      'Bad protocol id in the message: %d' % proto_id)
@@ -503,19 +471,14 @@ class TCompactProtocol(object):
 
     @reader
     def readDouble(self):
-        # buff = self.trans.readAll(8)
         buff = self.trans.read(8)
         val, = unpack('<d', buff)
         return val
 
     def __readString(self):
         len = self.__readSize()
-        # print('read string len', len)
-        # return self.trans.readAll(len)
 
         byte_payload = self.trans.read(len)
-        # print('byte_payload', byte_payload)
-        # print('byte_payload type', type(byte_payload))
         try:
             return byte_payload.decode('utf-8')
         except UnicodeDecodeError:
@@ -592,7 +555,6 @@ class TCompactProtocol(object):
         while True:
             # fname 没有用 是 None
             (fname, ftype, fid) = self.readFieldBegin()
-            # print('readFieldBegin', fname, ftype, fid)
             if ftype == TType.STOP:
                 break
 
@@ -602,14 +564,11 @@ class TCompactProtocol(object):
 
             try:
                 field = obj.thrift_spec[fid]
-                print('field-', obj.thrift_spec)
-                # print(type(obj.thrift_spec))
             except IndexError:
                 self.skip(ftype)
                 raise
             else:
                 if field is not None and ftype == field[0]:
-                    print('field', field)
                     fname = field[1]
                     fspec = field[2]
                     val = self.read_val(ftype, fspec)
@@ -625,8 +584,6 @@ class TCompactProtocol(object):
 
     def write_struct(self, obj):
         self.writeStructBegin(obj.__class__.__name__)
-        # print('thrift_spec ', obj.thrift_spec)  # thrift_spec  {1: (11, 'a', False)}
-        # print(obj)
 
         for field in iter(obj.thrift_spec):
             if field is None:
@@ -642,9 +599,6 @@ class TCompactProtocol(object):
                 continue
 
             self.writeFieldBegin(fname, ftype, field)
-            print('fspec -> ', fspec)
-            # print('writeFieldBegin - ', fname, ftype, field)
-            # self.write_val(ftype, val, fspec)
             self.write_val(ftype, val, f_container_spec)
             self.writeFieldEnd()
         self.writeFieldStop()
@@ -660,23 +614,14 @@ class TCompactProtocol(object):
             raise TProtocolException(type=TProtocolException.INVALID_DATA,
                                      message='Invalid field type %d' % (ttype))
         reader = getattr(self, r_handler)
-        print('reader', reader)
 
-        print('read spec', spec)
         if ttype == TType.LIST or ttype == TType.SET:
             if isinstance(spec, tuple):
                 v_type, v_spec = spec[0], spec[1]
             else:
                 v_type, v_spec = spec, None
-            print(spec)
             result = []
             r_type, sz = self.readListBegin()
-            # the v_type is useless here since we already get it from spec
-            # if r_type != v_type:
-            #     for _ in range(sz):
-            #         self.skip(r_type)
-            #     self.readListEnd()
-            #     return []
 
             for i in range(sz):
                 result.append(self.read_val(v_type, v_spec))
@@ -791,36 +736,20 @@ class TCompactProtocol(object):
         return obj
 
     def write_val(self, ttype, val, spec=None):
-        # print('write_val', ttype, val, spec)
         r_handler, w_handler, is_container = _TTYPE_HANDLERS[ttype]
-        # print('write_val - get_type_handler', r_handler, w_handler, is_container)
 
-        # list, map, set 自己处理
         if ttype == TType.LIST or ttype == TType.SET:
-            # ftype, fname, f_container_spec, f_req = fspec
-            # print('list --> ', ttype, val, spec)  # (15, [111, 222, 333], (15, 'phones', 10, False))
-            # self.writeFieldBegin('phones', TType.LIST, 2)
             if isinstance(spec, tuple):
-                # e_type_, t_spec, e_type  = spec[0], spec[2], spec[2]
                 e_type, t_spec = spec[0], spec[1]
             else:
                 e_type, t_spec = spec, None
 
-            # ele_type = e_type
             val_len = len(val)
-            # self.writeListBegin(TType.I64, len(self.phones))
             self.writeListBegin(e_type, val_len)
             for e_val in val:
-                # for list<struct>  =>   (14, 'lp', (12, <class 'pp_thrift.Person'>), False)
-                # if isinstance(e_type, tuple):
-                #     self.write_val(e_type[0], e_val, t_spec)
-                # else:
                 self.write_val(e_type, e_val, t_spec)
             self.writeListEnd()
-            # oprot.writeFieldEnd()
         elif ttype == TType.MAP:
-            # print('map -> ', ttype, val, spec)  # (13, {'kkk': 5}, (13, 'm', (11, 6), False))
-            print('type=map => ', ttype, val, spec)
 
             if isinstance(spec[0], int):
                 k_type = spec[0]
@@ -843,7 +772,6 @@ class TCompactProtocol(object):
         else:
             writer = getattr(self, w_handler)
             if is_container:
-                print('writeField - val, spec', val, spec)
                 writer(val, spec)
             else:
                 writer(val)
