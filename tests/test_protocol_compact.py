@@ -90,10 +90,12 @@ def test_pack_string():
 
 
 def test_unpack_string():
-    b, proto = gen_proto(b'\x0c\x68\x65\x6c\x6c\x6f\x20\x77\x6f\x72\x6c\x64\x21')
+    b, proto = gen_proto(b"\x0c\x68\x65\x6c\x6c\x6f"
+                         b"\x20\x77\x6f\x72\x6c\x64\x21")
     assert u('hello world!') == proto.read_val(TType.STRING)
 
-    b, proto = gen_proto(b'\x0c\xe4\xbd\xa0\xe5\xa5\xbd\xe4\xb8\x96\xe7\x95\x8c')
+    b, proto = gen_proto(b'\x0c\xe4\xbd\xa0\xe5\xa5'
+                         b'\xbd\xe4\xb8\x96\xe7\x95\x8c')
     assert u('你好世界') == proto.read_val(TType.STRING)
 
 
@@ -119,7 +121,8 @@ def test_write_struct():
 
 
 def test_read_struct():
-    b, proto = gen_proto(b"\x15\xf6\x01\x19\x28\x06\x31\x32\x33\x34\x35\x36\x06\x61\x62\x63\x64\x65\x66\x00")
+    b, proto = gen_proto(b"\x15\xf6\x01\x19\x28\x06\x31\x32\x33\x34"
+                         b"\x35\x36\x06\x61\x62\x63\x64\x65\x66\x00")
     _item = TItem(id=123, phones=["123456", "abcdef"])
     _item2 = TItem()
     proto.read_struct(_item2)
