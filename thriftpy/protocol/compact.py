@@ -7,6 +7,8 @@ from struct import pack, unpack
 
 from .exc import TProtocolException
 from ..thrift import TException
+from ..thrift import TType
+
 from thriftpy._compat import PY3
 
 __all__ = ['TCompactProtocol', 'TCompactProtocolFactory']
@@ -25,6 +27,7 @@ BOOL_READ = 8
 def make_helper(v_from, container):
     def helper(func):
         def nested(self, *args, **kwargs):
+            # conflict with single test
             # assert self.state in (v_from, container), \
             # (self.state, v_from, container)
             return func(self, *args, **kwargs)
@@ -105,45 +108,6 @@ class CompactType:
     SET = 0x0A
     MAP = 0x0B
     STRUCT = 0x0C
-
-
-class TType:
-    STOP = 0
-    VOID = 1
-    BOOL = 2
-    BYTE = 3
-    I08 = 3
-    DOUBLE = 4
-    I16 = 6
-    I32 = 8
-    I64 = 10
-    STRING = 11
-    UTF7 = 11
-    STRUCT = 12
-    MAP = 13
-    SET = 14
-    LIST = 15
-    UTF8 = 16
-    UTF16 = 17
-
-    _VALUES_TO_NAMES = ('STOP',
-                        'VOID',
-                        'BOOL',
-                        'BYTE',
-                        'DOUBLE',
-                        None,
-                        'I16',
-                        None,
-                        'I32',
-                        None,
-                        'I64',
-                        'STRING',
-                        'STRUCT',
-                        'MAP',
-                        'SET',
-                        'LIST',
-                        'UTF8',
-                        'UTF16')
 
 
 CTYPES = {TType.STOP: CompactType.STOP,
@@ -369,12 +333,10 @@ class TCompactProtocol(object):
         self.state = FIELD_READ
 
     def __readUByte(self):
-        # result, = unpack('!B', self.trans.readAll(1))
         result, = unpack('!B', self.trans.read(1))
         return result
 
     def __readByte(self):
-        # result, = unpack('!b', self.trans.readAll(1))
         result, = unpack('!b', self.trans.read(1))
         return result
 
@@ -484,8 +446,6 @@ class TCompactProtocol(object):
         except UnicodeDecodeError:
             return byte_payload
 
-        # return self.trans.read(len)
-
     readString = reader(__readString)
 
     def __getTType(self, byte):
@@ -553,7 +513,6 @@ class TCompactProtocol(object):
     def readStruct(self, obj):
         self.readStructBegin()
         while True:
-            # fname 没有用 是 None
             (fname, ftype, fid) = self.readFieldBegin()
             if ftype == TType.STOP:
                 break
@@ -577,10 +536,6 @@ class TCompactProtocol(object):
                     self.skip(ftype)
             self.readFieldEnd()
         self.readStructEnd()
-
-        # def write_struct(self, obj):
-        #   self.writeStruct(obj, obj.thrift_spec)
-        # write_val(self.trans, TType.STRUCT, obj)
 
     def write_struct(self, obj):
         self.writeStructBegin(obj.__class__.__name__)
@@ -643,12 +598,13 @@ class TCompactProtocol(object):
 
             result = {}
             sk_type, sv_type, sz = self.readMapBegin()
-            # if sk_type != k_type or sv_type != v_type:
-            #     for _ in range(sz):
-            #         skip(inbuf, sk_type)
-            #         skip(inbuf, sv_type)
-            #     self.readMapEnd()
-            #     return {}
+            print(sk_type, sv_type, sz)
+            if sk_type != k_type or sv_type != v_type:
+                for _ in range(sz):
+                    self.skip(sk_type)
+                    self.skip(sv_type)
+                self.readMapEnd()
+                return {}
 
             for i in range(sz):
                 k_val = self.read_val(k_type, k_spec)
