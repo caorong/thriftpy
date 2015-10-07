@@ -598,7 +598,6 @@ class TCompactProtocol(object):
 
             result = {}
             sk_type, sv_type, sz = self.readMapBegin()
-            print(sk_type, sv_type, sz)
             if sk_type != k_type or sv_type != v_type:
                 for _ in range(sz):
                     self.skip(sk_type)
