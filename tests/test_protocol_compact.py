@@ -99,6 +99,73 @@ def test_unpack_string():
     assert u('你好世界') == proto.read_val(TType.STRING)
 
 
+def test_pack_bool():
+    b, proto = gen_proto()
+    proto.write_bool(True)
+    assert "01" == hexlify(b.getvalue())
+
+
+def test_unpack_bool():
+    b, proto = gen_proto(b"\x01")
+    assert True == proto.read_bool()
+
+
+def test_pack_container_bool():
+    b, proto = gen_proto()
+    proto.write_val(TType.LIST, [True, False, True], TType.BOOL)
+    assert "31 01 02 01" == hexlify(b.getvalue())
+
+    b, proto = gen_proto()
+    proto.write_val(TType.MAP, {"a": True}, (TType.STRING, TType.BOOL))
+    assert "01 81 01 61 01" == hexlify(b.getvalue())
+
+    b, proto = gen_proto()
+    proto.write_val(TType.MAP, {"a": [True, False]},
+                    (TType.STRING, (TType.LIST, TType.BOOL)))
+    assert "01 89 01 61 21 01 02" == hexlify(b.getvalue())
+
+
+def test_unpack_container_bool():
+    b, proto = gen_proto(b"\x31\x01\x02\x01")
+    assert [True, False, True] == proto.read_val(TType.LIST, TType.BOOL)
+
+    b, proto = gen_proto(b"\x01\x81\x01\x61\x01")
+    assert {u("a"): True} == proto.read_val(TType.MAP,
+                                            (TType.STRING, TType.BOOL))
+
+    b, proto = gen_proto(b"\x01\x89\x01\x61\x21\x01\x02")
+    assert {u("a"): [True, False]} == proto.read_val(
+        TType.MAP, (TType.STRING, (TType.LIST, TType.BOOL)))
+
+    b, proto = gen_proto(b"\x03\x81\x01\x61\x01\x01\x63\x01\x01\x62\x02")
+    bool_hash = proto.read_val(TType.MAP, (TType.STRING, TType.BOOL))
+    assert bool_hash['a'] is True
+    assert bool_hash['b'] is False
+    assert bool_hash['c'] is True
+
+
+def test_pack_list():
+    b, proto = gen_proto()
+    proto.write_val(TType.LIST, [1, 2, 3, 4, 5], TType.I16)
+    assert "54 02 04 06 08 0a" == hexlify(b.getvalue())
+
+
+def test_unpack_list():
+    b, proto = gen_proto(b"\x54\x02\x04\x06\x08\x0a")
+    assert [1, 2, 3, 4, 5] == proto.read_val(TType.LIST, TType.I16)
+
+
+def test_pack_map():
+    b, proto = gen_proto()
+    proto.write_val(TType.MAP, {'a': 2}, (TType.STRING, TType.I16))
+    assert "01 84 01 61 04" == hexlify(b.getvalue())
+
+
+def test_unpack_map():
+    b, proto = gen_proto(b"\x01\x84\x01\x61\x04")
+    assert {u'a': 2} == proto.read_val(TType.MAP, (TType.STRING, TType.I16))
+
+
 def test_write_message_begin():
     b, proto = gen_proto()
     proto.write_message_begin("test", 2, 1)
@@ -116,6 +183,14 @@ def test_write_struct():
     b, proto = gen_proto()
     item = TItem(id=123, phones=["123456", "abcdef"])
     proto.write_struct(item)
+    assert ("15 f6 01 19 28 06 31 32 33 34 "
+            "35 36 06 61 62 63 64 65 66 00" == hexlify(b.getvalue()))
+
+
+def test_write_struct2():
+    b, proto = gen_proto()
+    item = TItem(id=123, phones=["123456", "abcdef"])
+    proto.write_val(TType.STRUCT, item)
     assert ("15 f6 01 19 28 06 31 32 33 34 "
             "35 36 06 61 62 63 64 65 66 00" == hexlify(b.getvalue()))
 
@@ -148,25 +223,3 @@ def test_write_huge_struct():
     b, proto = gen_proto()
     item = TItem(id=12345, phones=["1234567890"] * 100000)
     proto.write_struct(item)
-
-
-if __name__ == '__main__':
-    test_pack_byte()
-    test_unpack_byte()
-    test_pack_i16()
-    test_unpack_i16()
-    test_pack_i32()
-    test_unpack_i32()
-    test_pack_i64()
-    test_unpack_i64()
-    test_pack_double()
-    test_unpack_double()
-    test_pack_string()
-    test_unpack_string()
-    test_write_message_begin()
-    test_read_message_begin()
-    test_write_struct()
-    test_read_struct()
-    test_write_empty_struct()
-    test_read_empty_struct()
-    test_write_huge_struct()

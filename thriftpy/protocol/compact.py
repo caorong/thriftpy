@@ -11,7 +11,6 @@ from ..thrift import TType
 
 from thriftpy._compat import PY3
 
-__all__ = ['TCompactProtocol', 'TCompactProtocolFactory']
 
 CLEAR = 0
 FIELD_WRITE = 1
@@ -24,24 +23,7 @@ VALUE_READ = 7
 BOOL_READ = 8
 
 
-def make_helper(v_from, container):
-    def helper(func):
-        def nested(self, *args, **kwargs):
-            # conflict with single test
-            # assert self.state in (v_from, container), \
-            # (self.state, v_from, container)
-            return func(self, *args, **kwargs)
-
-        return nested
-
-    return helper
-
-
-writer = make_helper(VALUE_WRITE, CONTAINER_WRITE)
-reader = make_helper(VALUE_READ, CONTAINER_READ)
-
-
-def checkIntegerLimits(i, bits):
+def check_integer_limits(i, bits):
     if bits == 8 and (i < -128 or i > 127):
         raise TProtocolException(TProtocolException.INVALID_DATA,
                                  "i8 requires -128 <= number <= 127")
@@ -49,23 +31,26 @@ def checkIntegerLimits(i, bits):
         raise TProtocolException(TProtocolException.INVALID_DATA,
                                  "i16 requires -32768 <= number <= 32767")
     elif bits == 32 and (i < -2147483648 or i > 2147483647):
-        raise TProtocolException(TProtocolException.INVALID_DATA,
-                                 "i32 requires -2147483648 <= number <= 2147483647")
+        raise TProtocolException(
+            TProtocolException.INVALID_DATA,
+            "i32 requires -2147483648 <= number <= 2147483647")
     elif bits == 64 and (i < -9223372036854775808 or i > 9223372036854775807):
-        raise TProtocolException(TProtocolException.INVALID_DATA,
-                                 "i64 requires -9223372036854775808 <= number <= 9223372036854775807")
+        raise TProtocolException(
+            TProtocolException.INVALID_DATA,
+            "i64 requires -9223372036854775808 <= number <= \
+                    9223372036854775807")
 
 
-def makeZigZag(n, bits):
-    checkIntegerLimits(n, bits)
+def make_zig_zag(n, bits):
+    check_integer_limits(n, bits)
     return (n << 1) ^ (n >> (bits - 1))
 
 
-def fromZigZag(n):
+def from_zig_zag(n):
     return (n >> 1) ^ -(n & 1)
 
 
-def writeVarint(trans, n):
+def write_varint(trans, n):
     out = []
     while True:
         if n & ~0x7f == 0:
@@ -81,7 +66,7 @@ def writeVarint(trans, n):
         trans.write(bytes(data))
 
 
-def readVarint(trans):
+def read_varint(trans):
     result = 0
     shift = 0
 
@@ -132,28 +117,6 @@ del k
 del v
 
 
-_TTYPE_HANDLERS = (
-    (None, None, False),  # 0 TType.STOP
-    (None, None, False),  # 1 TType.VOID # TODO: handle void?
-    ('readBool', 'writeBool', False),  # 2 TType.BOOL
-    ('readByte', 'writeByte', False),  # 3 TType.BYTE and I08
-    ('readDouble', 'writeDouble', False),  # 4 TType.DOUBLE
-    (None, None, False),  # 5 undefined
-    ('readI16', 'writeI16', False),  # 6 TType.I16
-    (None, None, False),  # 7 undefined
-    ('readI32', 'writeI32', False),  # 8 TType.I32
-    (None, None, False),  # 9 undefined
-    ('readI64', 'writeI64', False),  # 10 TType.I64
-    ('readString', 'writeString', False),  # 11 TType.STRING and UTF7
-    ('readContainerStruct', 'writeContainerStruct', True),  # 12 *.STRUCT
-    ('readContainerMap', 'writeContainerMap', True),  # 13 TType.MAP
-    ('readContainerSet', 'writeContainerSet', True),  # 14 TType.SET
-    ('readContainerList', 'writeContainerList', True),  # 15 TType.LIST
-    (None, None, False),  # 16 TType.UTF8 # TODO: handle utf8 types?
-    (None, None, False)  # 17 TType.UTF16 # TODO: handle utf16 types?
-)
-
-
 class TCompactProtocol(object):
     """Compact implementation of the Thrift protocol driver."""
     PROTOCOL_ID = 0x82
@@ -165,280 +128,108 @@ class TCompactProtocol(object):
 
     def __init__(self, trans):
         self.trans = trans
-        self.state = CLEAR
         self.__last_fid = 0
         self.__bool_fid = None
         self.__bool_value = None
         self.__structs = []
-        self.__containers = []
 
-    def __writeVarint(self, n):
-        writeVarint(self.trans, n)
+    def __getTType(self, byte):
+        return TTYPES[byte & 0x0f]
 
-    def writeMessageBegin(self, name, type, seqid):
-        assert self.state == CLEAR
-        self.__writeUByte(self.PROTOCOL_ID)
-        self.__writeUByte(self.VERSION | (type << self.TYPE_SHIFT_AMOUNT))
-        self.__writeVarint(seqid)
-        self.__writeString(name)
-        self.state = VALUE_WRITE
+    def __read_size(self):
+        result = read_varint(self.trans)
+        if result < 0:
+            raise TException("Length < 0")
+        return result
 
-    def writeMessageEnd(self):
-        assert self.state == VALUE_WRITE
-        self.state = CLEAR
+    def read_message_begin(self):
+        proto_id = self.read_ubyte()
+        if proto_id != self.PROTOCOL_ID:
+            raise TProtocolException(TProtocolException.BAD_VERSION,
+                                     'Bad protocol id in the message: %d'
+                                     % proto_id)
 
-    def writeStructBegin(self, name):
-        assert self.state in (CLEAR, CONTAINER_WRITE, VALUE_WRITE), self.state
-        self.__structs.append((self.state, self.__last_fid))
-        self.state = FIELD_WRITE
-        self.__last_fid = 0
+        ver_type = self.read_ubyte()
+        type = (ver_type >> self.TYPE_SHIFT_AMOUNT) & self.TYPE_BITS
+        version = ver_type & self.VERSION_MASK
+        if version != self.VERSION:
+            raise TProtocolException(TProtocolException.BAD_VERSION,
+                                     'Bad version: %d (expect %d)'
+                                     % (version, self.VERSION))
+        seqid = read_varint(self.trans)
+        name = self.read_string()
+        return (name, type, seqid)
 
-    def writeStructEnd(self):
-        assert self.state == FIELD_WRITE
-        self.state, self.__last_fid = self.__structs.pop()
+    def read_message_end(self):
+        assert len(self.__structs) == 0
 
-    def writeFieldStop(self):
-        self.__writeByte(0)
-
-    def __writeFieldHeader(self, type, fid):
-        delta = fid - self.__last_fid
-        if 0 < delta <= 15:
-            self.__writeUByte(delta << 4 | type)
-        else:
-            self.__writeByte(type)
-            self.__writeI16(fid)
-        self.__last_fid = fid
-
-    def writeFieldBegin(self, name, type, fid):
-        assert self.state == FIELD_WRITE, self.state
-        if type == TType.BOOL:
-            self.state = BOOL_WRITE
-            self.__bool_fid = fid
-        else:
-            self.state = VALUE_WRITE
-            self.__writeFieldHeader(CTYPES[type], fid)
-
-    def writeFieldEnd(self):
-        assert self.state in (VALUE_WRITE, BOOL_WRITE), self.state
-        self.state = FIELD_WRITE
-
-    def __writeUByte(self, byte):
-        self.trans.write(pack('!B', byte))
-
-    def __writeByte(self, byte):
-        self.trans.write(pack('!b', byte))
-
-    def __writeI16(self, i16):
-        self.__writeVarint(makeZigZag(i16, 16))
-
-    def __writeSize(self, i32):
-        self.__writeVarint(i32)
-
-    def writeCollectionBegin(self, etype, size):
-        assert self.state in (VALUE_WRITE, CONTAINER_WRITE), self.state
-        if size <= 14:
-            self.__writeUByte(size << 4 | CTYPES[etype])
-        else:
-            self.__writeUByte(0xf0 | CTYPES[etype])
-            self.__writeSize(size)
-        self.__containers.append(self.state)
-        self.state = CONTAINER_WRITE
-
-    writeSetBegin = writeCollectionBegin
-    writeListBegin = writeCollectionBegin
-
-    def writeMapBegin(self, ktype, vtype, size):
-        assert self.state in (VALUE_WRITE, CONTAINER_WRITE), self.state
-        if size == 0:
-            self.__writeByte(0)
-        else:
-            self.__writeSize(size)
-            self.__writeUByte(CTYPES[ktype] << 4 | CTYPES[vtype])
-        self.__containers.append(self.state)
-        self.state = CONTAINER_WRITE
-
-    def writeCollectionEnd(self):
-        assert self.state == CONTAINER_WRITE, self.state
-        self.state = self.__containers.pop()
-
-    writeMapEnd = writeCollectionEnd
-    writeSetEnd = writeCollectionEnd
-    writeListEnd = writeCollectionEnd
-
-    def writeBool(self, bool):
-        if self.state == BOOL_WRITE:
-            if bool:
-                ctype = CompactType.TRUE
-            else:
-                ctype = CompactType.FALSE
-            self.__writeFieldHeader(ctype, self.__bool_fid)
-        elif self.state == CONTAINER_WRITE:
-            if bool:
-                self.__writeByte(CompactType.TRUE)
-            else:
-                self.__writeByte(CompactType.FALSE)
-        else:
-            raise AssertionError("Invalid state in compact protocol")
-
-    writeByte = writer(__writeByte)
-    writeI16 = writer(__writeI16)
-
-    @writer
-    def writeI32(self, i32):
-        self.__writeVarint(makeZigZag(i32, 32))
-
-    @writer
-    def writeI64(self, i64):
-        self.__writeVarint(makeZigZag(i64, 64))
-
-    @writer
-    def writeDouble(self, dub):
-        self.trans.write(pack('<d', dub))
-
-    def __writeString(self, s):
-        if PY3:
-            self.__writeSize(len(bytearray(s, 'utf-8')))
-        else:
-            self.__writeSize(len(s))
-        if not isinstance(s, bytes):
-            s = s.encode('utf-8')
-        self.trans.write(s)
-
-    writeString = writer(__writeString)
-
-    def readFieldBegin(self):
-        assert self.state == FIELD_READ, self.state
-        type = self.__readUByte()
+    def read_field_begin(self):
+        type = self.read_ubyte()
         if type & 0x0f == TType.STOP:
             return (None, 0, 0)
         delta = type >> 4
         if delta == 0:
-            fid = self.__readI16()
+            fid = from_zig_zag(read_varint(self.trans))
         else:
             fid = self.__last_fid + delta
         self.__last_fid = fid
         type = type & 0x0f
         if type == CompactType.TRUE:
-            self.state = BOOL_READ
             self.__bool_value = True
         elif type == CompactType.FALSE:
-            self.state = BOOL_READ
             self.__bool_value = False
         else:
-            self.state = VALUE_READ
+            pass
         return (None, self.__getTType(type), fid)
 
-    def readFieldEnd(self):
-        assert self.state in (VALUE_READ, BOOL_READ), self.state
-        self.state = FIELD_READ
+    def read_field_end(self):
+        pass
 
-    def __readUByte(self):
-        result, = unpack('!B', self.trans.read(1))
-        return result
-
-    def __readByte(self):
-        result, = unpack('!b', self.trans.read(1))
-        return result
-
-    def __readVarint(self):
-        return readVarint(self.trans)
-
-    def __readZigZag(self):
-        return fromZigZag(self.__readVarint())
-
-    def __readSize(self):
-        result = self.__readVarint()
-        if result < 0:
-            raise TException("Length < 0")
-        return result
-
-    def readMessageBegin(self):
-        assert self.state == CLEAR
-        proto_id = self.__readUByte()
-        if proto_id != self.PROTOCOL_ID:
-            raise TProtocolException(TProtocolException.BAD_VERSION,
-                                     'Bad protocol id in the message: %d' % proto_id)
-        ver_type = self.__readUByte()
-        type = (ver_type >> self.TYPE_SHIFT_AMOUNT) & self.TYPE_BITS
-        version = ver_type & self.VERSION_MASK
-        if version != self.VERSION:
-            raise TProtocolException(TProtocolException.BAD_VERSION,
-                                     'Bad version: %d (expect %d)' % (version, self.VERSION))
-        seqid = self.__readVarint()
-        name = self.__readString()
-        return (name, type, seqid)
-
-    def readMessageEnd(self):
-        assert self.state == CLEAR
-        assert len(self.__structs) == 0
-
-    def readStructBegin(self):
-        assert self.state in (CLEAR, CONTAINER_READ, VALUE_READ), self.state
-        self.__structs.append((self.state, self.__last_fid))
-        self.state = FIELD_READ
+    def read_struct_begin(self):
+        self.__structs.append(self.__last_fid)
         self.__last_fid = 0
 
-    def readStructEnd(self):
-        assert self.state == FIELD_READ
-        self.state, self.__last_fid = self.__structs.pop()
+    def read_struct_end(self):
+        self.__last_fid = self.__structs.pop()
 
-    def readCollectionBegin(self):
-        assert self.state in (VALUE_READ, CONTAINER_READ), self.state
-        size_type = self.__readUByte()
+    def read_map_begin(self):
+        size = self.__read_size()
+        types = 0
+        if size > 0:
+            types = self.read_ubyte()
+        vtype = self.__getTType(types)
+        ktype = self.__getTType(types >> 4)
+        return (ktype, vtype, size)
+
+    def read_collection_begin(self):
+        size_type = self.read_ubyte()
         size = size_type >> 4
         type = self.__getTType(size_type)
         if size == 15:
-            size = self.__readSize()
-        self.__containers.append(self.state)
-        self.state = CONTAINER_READ
+            size = self.__read_size()
         return type, size
 
-    readSetBegin = readCollectionBegin
-    readListBegin = readCollectionBegin
+    def read_collection_end(self):
+        pass
 
-    def readMapBegin(self):
-        assert self.state in (VALUE_READ, CONTAINER_READ), self.state
-        size = self.__readSize()
-        types = 0
-        if size > 0:
-            types = self.__readUByte()
-        vtype = self.__getTType(types)
-        ktype = self.__getTType(types >> 4)
-        self.__containers.append(self.state)
-        self.state = CONTAINER_READ
-        return (ktype, vtype, size)
+    def read_byte(self):
+        result, = unpack('!b', self.trans.read(1))
+        return result
 
-    def readCollectionEnd(self):
-        assert self.state == CONTAINER_READ, self.state
-        self.state = self.__containers.pop()
+    def read_ubyte(self):
+        result, = unpack('!B', self.trans.read(1))
+        return result
 
-    readSetEnd = readCollectionEnd
-    readListEnd = readCollectionEnd
-    readMapEnd = readCollectionEnd
+    def read_int(self):
+        return from_zig_zag(read_varint(self.trans))
 
-    def readBool(self):
-        if self.state == BOOL_READ:
-            return self.__bool_value == CompactType.TRUE
-        elif self.state == CONTAINER_READ:
-            return self.__readByte() == CompactType.TRUE
-        else:
-            raise AssertionError("Invalid state in compact protocol: %d" %
-                                 self.state)
-
-    readByte = reader(__readByte)
-    __readI16 = __readZigZag
-    readI16 = reader(__readZigZag)
-    readI32 = reader(__readZigZag)
-    readI64 = reader(__readZigZag)
-
-    @reader
-    def readDouble(self):
+    def read_double(self):
         buff = self.trans.read(8)
         val, = unpack('<d', buff)
         return val
 
-    def __readString(self):
-        len = self.__readSize()
+    def read_string(self):
+        len = self.__read_size()
 
         byte_payload = self.trans.read(len)
         try:
@@ -446,74 +237,17 @@ class TCompactProtocol(object):
         except UnicodeDecodeError:
             return byte_payload
 
-    readString = reader(__readString)
-
-    def __getTType(self, byte):
-        return TTYPES[byte & 0x0f]
-
-    def skip(self, ttype):
-        if ttype == TType.STOP:
-            return
-        elif ttype == TType.BOOL:
-            self.readBool()
-        elif ttype == TType.BYTE:
-            self.readByte()
-        elif ttype == TType.I16:
-            self.readI16()
-        elif ttype == TType.I32:
-            self.readI32()
-        elif ttype == TType.I64:
-            self.readI64()
-        elif ttype == TType.DOUBLE:
-            self.readDouble()
-        elif ttype == TType.STRING:
-            self.readString()
-        elif ttype == TType.STRUCT:
-            name = self.readStructBegin()
-            while True:
-                (name, ttype, id) = self.readFieldBegin()
-                if ttype == TType.STOP:
-                    break
-                self.skip(ttype)
-                self.readFieldEnd()
-            self.readStructEnd()
-        elif ttype == TType.MAP:
-            (ktype, vtype, size) = self.readMapBegin()
-            for i in xrange(size):
-                self.skip(ktype)
-                self.skip(vtype)
-            self.readMapEnd()
-        elif ttype == TType.SET:
-            (etype, size) = self.readSetBegin()
-            for i in xrange(size):
-                self.skip(etype)
-            self.readSetEnd()
-        elif ttype == TType.LIST:
-            (etype, size) = self.readListBegin()
-            for i in xrange(size):
-                self.skip(etype)
-            self.readListEnd()
-
-    def read_message_begin(self):
-        api, ttype, seqid = self.readMessageBegin()
-        return api, ttype, seqid
-
-    def read_message_end(self):
-        self.readMessageEnd()
-
-    def write_message_begin(self, name, ttype, seqid):
-        self.writeMessageBegin(name, ttype, seqid)
-
-    def write_message_end(self):
-        self.writeMessageEnd()
+    def read_bool(self):
+        if self.__bool_value is not None:
+            result = self.__bool_value
+            self.__bool_value = None
+            return result
+        return self.read_byte() == CompactType.TRUE
 
     def read_struct(self, obj):
-        return self.readStruct(obj)
-
-    def readStruct(self, obj):
-        self.readStructBegin()
+        self.read_struct_begin()
         while True:
-            (fname, ftype, fid) = self.readFieldBegin()
+            (fname, ftype, fid) = self.read_field_begin()
             if ftype == TType.STOP:
                 break
 
@@ -534,55 +268,39 @@ class TCompactProtocol(object):
                     setattr(obj, fname, val)
                 else:
                     self.skip(ftype)
-            self.readFieldEnd()
-        self.readStructEnd()
-
-    def write_struct(self, obj):
-        self.writeStructBegin(obj.__class__.__name__)
-
-        for field in iter(obj.thrift_spec):
-            if field is None:
-                continue
-            fspec = obj.thrift_spec[field]
-            if len(fspec) == 3:
-                ftype, fname, freq = fspec
-                f_container_spec = None
-            else:
-                ftype, fname, f_container_spec, f_req = fspec
-            val = getattr(obj, fname)
-            if val is None:
-                continue
-
-            self.writeFieldBegin(fname, ftype, field)
-            self.write_val(ftype, val, f_container_spec)
-            self.writeFieldEnd()
-        self.writeFieldStop()
-        self.writeStructEnd()
+            self.read_field_end()
+        self.read_struct_end()
 
     def read_val(self, ttype, spec=None):
-        try:
-            (r_handler, w_handler, is_container) = _TTYPE_HANDLERS[ttype]
-        except IndexError:
-            raise TProtocolException(type=TProtocolException.INVALID_DATA,
-                                     message='Invalid field type %d' % (ttype))
-        if r_handler is None:
-            raise TProtocolException(type=TProtocolException.INVALID_DATA,
-                                     message='Invalid field type %d' % (ttype))
-        reader = getattr(self, r_handler)
+        if ttype == TType.BOOL:
+            return self.read_bool()
 
-        if ttype == TType.LIST or ttype == TType.SET:
+        elif ttype == TType.BYTE:
+            return self.read_byte()
+
+        elif ttype == TType.I16 or ttype == TType.I32 or ttype == TType.I64:
+            return self.read_int()
+
+        elif ttype == TType.DOUBLE:
+            return self.read_double()
+
+        elif ttype == TType.STRING:
+            return self.read_string()
+
+        elif ttype == TType.LIST or ttype == TType.SET:
             if isinstance(spec, tuple):
                 v_type, v_spec = spec[0], spec[1]
             else:
                 v_type, v_spec = spec, None
             result = []
-            r_type, sz = self.readListBegin()
+            r_type, sz = self.read_collection_begin()
 
             for i in range(sz):
                 result.append(self.read_val(v_type, v_spec))
 
-            self.readListEnd()
+            self.read_collection_end()
             return result
+
         elif ttype == TType.MAP:
             if isinstance(spec[0], int):
                 k_type = spec[0]
@@ -597,115 +315,180 @@ class TCompactProtocol(object):
                 v_type, v_spec = spec[1]
 
             result = {}
-            sk_type, sv_type, sz = self.readMapBegin()
+            sk_type, sv_type, sz = self.read_map_begin()
             if sk_type != k_type or sv_type != v_type:
                 for _ in range(sz):
                     self.skip(sk_type)
                     self.skip(sv_type)
-                self.readMapEnd()
+                self.read_collection_end()
                 return {}
 
             for i in range(sz):
                 k_val = self.read_val(k_type, k_spec)
                 v_val = self.read_val(v_type, v_spec)
                 result[k_val] = v_val
-            self.readMapEnd()
-
+            self.read_collection_end()
             return result
 
-        else:
-            if not is_container:
-                return reader()
-            return reader(spec)
+        elif ttype == TType.STRUCT:
+            return self.read_struct()
 
-    def readContainerList(self, spec):
-        results = []
-        ttype, tspec = spec[0], spec[1]
-        r_handler = _TTYPE_HANDLERS[ttype][0]
-        reader = getattr(self, r_handler)
-        (list_type, list_len) = self.readListBegin()
-        if tspec is None:
-            # list values are simple types
-            for idx in xrange(list_len):
-                results.append(reader())
-        else:
-            # this is like an inlined read_val
-            container_reader = _TTYPE_HANDLERS[list_type][0]
-            val_reader = getattr(self, container_reader)
-            for idx in xrange(list_len):
-                val = val_reader(tspec)
-                results.append(val)
-        self.readListEnd()
-        return results
+    def __write_size(self, i32):
+        write_varint(self.trans, i32)
 
-    def readContainerSet(self, spec):
-        results = set()
-        ttype, tspec = spec[0], spec[1]
-        r_handler = _TTYPE_HANDLERS[ttype][0]
-        reader = getattr(self, r_handler)
-        (set_type, set_len) = self.readSetBegin()
-        if tspec is None:
-            # set members are simple types
-            for idx in xrange(set_len):
-                results.add(reader())
+    def __write_field_header(self, type, fid):
+        delta = fid - self.__last_fid
+        if 0 < delta <= 15:
+            self.write_ubyte(delta << 4 | type)
         else:
-            container_reader = _TTYPE_HANDLERS[set_type][0]
-            val_reader = getattr(self, container_reader)
-            for idx in xrange(set_len):
-                results.add(val_reader(tspec))
-        self.readSetEnd()
-        return results
+            self.write_byte(type)
+            self.write_i16(fid)
+        self.__last_fid = fid
 
-    def readContainerMap(self, spec):
-        results = dict()
-        key_ttype, key_spec = spec[0], spec[1]
-        val_ttype, val_spec = spec[2], spec[3]
-        (map_ktype, map_vtype, map_len) = self.readMapBegin()
-        # TODO: compare types we just decoded with thrift_spec and
-        # abort/skip if types disagree
-        key_reader = getattr(self, _TTYPE_HANDLERS[key_ttype][0])
-        val_reader = getattr(self, _TTYPE_HANDLERS[val_ttype][0])
-        # list values are simple types
-        for idx in xrange(map_len):
-            if key_spec is None:
-                k_val = key_reader()
+    def write_message_begin(self, name, type, seqid):
+        self.write_ubyte(self.PROTOCOL_ID)
+        self.write_ubyte(self.VERSION | (type << self.TYPE_SHIFT_AMOUNT))
+        write_varint(self.trans, seqid)
+        self.write_string(name)
+
+    def write_message_end(self):
+        pass
+
+    def write_field_stop(self):
+        self.write_byte(0)
+
+    def write_field_begin(self, name, type, fid):
+        if type == TType.BOOL:
+            self.__bool_fid = fid
+        else:
+            self.__write_field_header(CTYPES[type], fid)
+
+    def write_field_end(self):
+        pass
+
+    def write_struct_begin(self, name):
+        self.__structs.append(self.__last_fid)
+        self.__last_fid = 0
+
+    def write_struct_end(self):
+        self.__last_fid = self.__structs.pop()
+
+    def write_collection_begin(self, etype, size):
+        if size <= 14:
+            self.write_ubyte(size << 4 | CTYPES[etype])
+        else:
+            self.write_ubyte(0xf0 | CTYPES[etype])
+            self.__write_size(size)
+
+    def write_map_begin(self, ktype, vtype, size):
+        if size == 0:
+            self.write_byte(0)
+        else:
+            self.__write_size(size)
+            self.write_ubyte(CTYPES[ktype] << 4 | CTYPES[vtype])
+
+    def write_collection_end(self):
+        pass
+
+    def write_ubyte(self, byte):
+        self.trans.write(pack('!B', byte))
+
+    def write_byte(self, byte):
+        self.trans.write(pack('!b', byte))
+
+    def write_bool(self, bool):
+        if self.__bool_fid and self.__bool_fid > self.__last_fid \
+                and self.__bool_fid - self.__last_fid <= 15:
+            if bool:
+                ctype = CompactType.TRUE
             else:
-                k_val = self.read_val(key_ttype, key_spec)
-            if val_spec is None:
-                v_val = val_reader()
+                ctype = CompactType.FALSE
+            self.__write_field_header(ctype, self.__bool_fid)
+        else:
+            if bool:
+                self.write_byte(CompactType.TRUE)
             else:
-                v_val = self.read_val(val_ttype, val_spec)
-            # this raises a TypeError with unhashable keys types
-            # i.e. this fails: d=dict(); d[[0,1]] = 2
-            results[k_val] = v_val
-        self.readMapEnd()
-        return results
+                self.write_byte(CompactType.FALSE)
 
-    def writeContainerStruct(self, val, spec):
-        val.write(self)
+    def write_i16(self, i16):
+        write_varint(self.trans, make_zig_zag(i16, 16))
 
-    def readContainerStruct(self, spec):
-        obj_class = spec
-        obj = obj_class()
-        obj.read(self)
-        return obj
+    def write_i32(self, i32):
+        write_varint(self.trans, make_zig_zag(i32, 32))
+
+    def write_i64(self, i64):
+        write_varint(self.trans, make_zig_zag(i64, 64))
+
+    def write_double(self, dub):
+        self.trans.write(pack('<d', dub))
+
+    def write_string(self, s):
+        if PY3:
+            self.__write_size(len(bytearray(s, 'utf-8')))
+        else:
+            self.__write_size(len(s))
+        if not isinstance(s, bytes):
+            s = s.encode('utf-8')
+        self.trans.write(s)
+
+    def write_struct(self, obj):
+        self.write_struct_begin(obj.__class__.__name__)
+
+        for field in iter(obj.thrift_spec):
+            if field is None:
+                continue
+            fspec = obj.thrift_spec[field]
+            if len(fspec) == 3:
+                ftype, fname, freq = fspec
+                f_container_spec = None
+            else:
+                ftype, fname, f_container_spec, f_req = fspec
+            val = getattr(obj, fname)
+            if val is None:
+                continue
+
+            self.write_field_begin(fname, ftype, field)
+            self.write_val(ftype, val, f_container_spec)
+            self.write_field_end()
+        self.write_field_stop()
+        self.write_struct_end()
 
     def write_val(self, ttype, val, spec=None):
-        r_handler, w_handler, is_container = _TTYPE_HANDLERS[ttype]
 
-        if ttype == TType.LIST or ttype == TType.SET:
+        if ttype == TType.BOOL:
+            self.write_bool(val)
+
+        elif ttype == TType.BYTE:
+            self.write_byte(val)
+
+        elif ttype == TType.I16:
+            self.write_i16(val)
+
+        elif ttype == TType.I32:
+            self.write_i32(val)
+
+        elif ttype == TType.I64:
+            self.write_i64(val)
+
+        elif ttype == TType.DOUBLE:
+            self.write_double(val)
+
+        elif ttype == TType.STRING:
+            self.write_string(val)
+
+        elif ttype == TType.LIST or ttype == TType.SET:
             if isinstance(spec, tuple):
                 e_type, t_spec = spec[0], spec[1]
             else:
                 e_type, t_spec = spec, None
 
             val_len = len(val)
-            self.writeListBegin(e_type, val_len)
+            self.write_collection_begin(e_type, val_len)
             for e_val in val:
                 self.write_val(e_type, e_val, t_spec)
-            self.writeListEnd()
-        elif ttype == TType.MAP:
+            self.write_collection_end()
 
+        elif ttype == TType.MAP:
             if isinstance(spec[0], int):
                 k_type = spec[0]
                 k_spec = None
@@ -718,18 +501,68 @@ class TCompactProtocol(object):
             else:
                 v_type, v_spec = spec[1]
 
-            self.writeMapBegin(k_type, v_type, len(val))
+            self.write_map_begin(k_type, v_type, len(val))
             for k in iter(val):
                 self.write_val(k_type, k, k_spec)
                 self.write_val(v_type, val[k], v_spec)
-            self.writeMapEnd()
+            self.write_collection_end()
 
-        else:
-            writer = getattr(self, w_handler)
-            if is_container:
-                writer(val, spec)
-            else:
-                writer(val)
+        elif ttype == TType.STRUCT:
+            self.write_struct(val)
+
+    def skip(self, ttype):
+        if ttype == TType.STOP:
+            return
+
+        elif ttype == TType.BOOL:
+            self.read_bool()
+
+        elif ttype == TType.BYTE:
+            self.read_byte()
+
+        elif ttype == TType.I16:
+            from_zig_zag(read_varint(self.trans))
+
+        elif ttype == TType.I32:
+            from_zig_zag(read_varint(self.trans))
+
+        elif ttype == TType.I64:
+            from_zig_zag(read_varint(self.trans))
+
+        elif ttype == TType.DOUBLE:
+            self.read_double()
+
+        elif ttype == TType.STRING:
+            self.read_string()
+
+        elif ttype == TType.STRUCT:
+            name = self.read_struct_begin()
+            while True:
+                (name, ttype, id) = self.read_field_begin()
+                if ttype == TType.STOP:
+                    break
+                self.skip(ttype)
+                self.read_field_end()
+            self.read_struct_end()
+
+        elif ttype == TType.MAP:
+            (ktype, vtype, size) = self.read_map_begin()
+            for i in range(size):
+                self.skip(ktype)
+                self.skip(vtype)
+            self.read_collection_end()
+
+        elif ttype == TType.SET:
+            (etype, size) = self.read_collection_begin()
+            for i in range(size):
+                self.skip(etype)
+            self.read_collection_end()
+
+        elif ttype == TType.LIST:
+            (etype, size) = self.read_collection_begin()
+            for i in range(size):
+                self.skip(etype)
+            self.read_collection_end()
 
 
 class TCompactProtocolFactory:
@@ -737,7 +570,4 @@ class TCompactProtocolFactory:
         pass
 
     def get_protocol(self, trans):
-        return TCompactProtocol(trans)
-
-    def getProtocol(self, trans):
         return TCompactProtocol(trans)
