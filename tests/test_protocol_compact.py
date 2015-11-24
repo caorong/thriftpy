@@ -16,6 +16,14 @@ class TItem(TPayload):
     default_spec = [("id", None), ("phones", None)]
 
 
+class TPkg(TPayload):
+    thrift_spec = {
+        1: (TType.I32, "id", False),
+        2: (TType.LIST, "items", (TType.STRUCT, TItem), False),
+    }
+    default_spec = [("id", None), ("items", None)]
+
+
 def gen_proto(bytearray=b''):
     b = BytesIO(bytearray)
     proto = compact.TCompactProtocol(b)
@@ -202,6 +210,29 @@ def test_read_struct():
     _item2 = TItem()
     proto.read_struct(_item2)
     assert _item == _item2
+
+
+def test_write_struct_recur():
+    b, proto = gen_proto()
+    item1 = TItem(id=123, phones=["123456", "abcdef"])
+    item2 = TItem(id=456, phones=["123456", "abcdef"])
+    pkg = TPkg(id=123, items=[item1, item2])
+    proto.write_val(TType.STRUCT, pkg)
+    assert ("15 f6 01 19 2c 15 f6 01 19 28 06 31 32 33 34 35 36 06 61 62 63 "
+            "64 65 66 00 15 90 07 19 28 06 31 32 33 34 35 36 06 61 62 63 64 "
+            "65 66 00 00" == hexlify(b.getvalue()))
+
+
+def test_read_struct_recur():
+    b, proto = gen_proto(b'\x15\xf6\x01\x19,\x15\xf6\x01\x19(\x06123456\x06'
+                         b'abcdef\x00\x15\x90\x07\x19(\x06123456\x06abcdef'
+                         b'\x00\x00')
+    pkg = TPkg()
+    proto.read_struct(pkg)
+    item1 = TItem(id=123, phones=["123456", "abcdef"])
+    item2 = TItem(id=456, phones=["123456", "abcdef"])
+    _pkg = TPkg(id=123, items=[item1, item2])
+    assert _pkg == pkg
 
 
 def test_write_empty_struct():

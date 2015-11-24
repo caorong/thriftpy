@@ -331,7 +331,9 @@ class TCompactProtocol(object):
             return result
 
         elif ttype == TType.STRUCT:
-            return self.read_struct()
+            obj = spec()
+            self.read_struct(obj)
+            return obj
 
     def __write_size(self, i32):
         write_varint(self.trans, i32)
